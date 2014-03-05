@@ -916,8 +916,6 @@ class AwsConnector(object):
             self.region = self.config["region"]
             self.access_key = self.config["accesskey"]
             self.secret_key = self.config["secretkey"]
-            self.image_id = self.config["ami_id"]
-            lgr.debug(self.image_id)
             self.aws_conn = connect_to_region(self.region,
                                               aws_access_key_id=self.access_key,
                                               aws_secret_access_key=self.secret_key)

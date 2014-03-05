@@ -2,7 +2,6 @@ Amazon Credentials:
     accesskey: Enter Amazon AccessKey Here
     secretkey: Enter Amazon SecretKey Here
     region: us-east-1
-    ami_id: ami-bba18dd2
 
 compute:
     management_server:
@@ -12,7 +11,7 @@ compute:
         instance:
             externally_provisioned: 0
             name: cloudify-management-server
-            image_id: ami-bba18dd2
+            image_id: ami-013f9768
             instance_type: t1.micro
         management_keypair:
             externally_provisioned: 0

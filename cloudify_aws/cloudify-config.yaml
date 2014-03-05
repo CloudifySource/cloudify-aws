@@ -2,7 +2,6 @@ Amazon Credentials:
     accesskey: 
     secretkey: 
     region: us-east-1
-    ami_id: ami-bba18dd2
 compute:
     management_server:
         #floating_ip: [FLOATING_IP] #uncomment and provide preallocated ip to disable auto-allocation of new IP on each run
@@ -11,7 +10,7 @@ compute:
         instance:
             externally_provisioned: 0
             name: cloudify-management-server
-            image_id: ami-bba18dd2
+            image_id: ami-013f9768
             instance_type: t1.micro
         management_keypair:
             externally_provisioned: 0
