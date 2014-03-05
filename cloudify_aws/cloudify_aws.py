@@ -44,6 +44,11 @@ import logging
 import logging.config
 import config
 
+# Validator
+from IPy import IP
+from jsonschema import ValidationError, Draft4Validator
+from schemas import AWS_SCHEMA
+
 # Amazon
 from boto.ec2 import connect_to_region
 from boto.ec2.instanceinfo import InstanceInfo
@@ -329,11 +334,15 @@ class CosmoOnAwsBootstrapper(object):
         mgr_kpconf = compute_config['management_server']['management_keypair']
 
         lgr.debug('creating ssh channel to machine...')
-        ssh = self._create_ssh_channel_with_mgmt(
-            mgmt_ip,
-            self._get_private_key_path_from_keypair_config(
-                management_server_config['management_keypair']),
-            management_server_config['user_on_management'])
+        try:
+            ssh = self._create_ssh_channel_with_mgmt(
+                mgmt_ip,
+                self._get_private_key_path_from_keypair_config(
+                    management_server_config['management_keypair']),
+                management_server_config['user_on_management'])
+        except Exception:
+            lgr.debug("Failed to create SSH")
+            return False
 
         env.user = management_server_config['user_on_management']
         env.warn_only = 0
@@ -350,43 +359,59 @@ class CosmoOnAwsBootstrapper(object):
                             ['private_key_target_path']]
 
         if not bootstrap_using_script:
-
-            self._copy_files_to_manager(
-                ssh,
-                management_server_config['userhome_on_management'],
-                self.config['Amazon Credentials'],
-                self._get_private_key_path_from_keypair_config(
-                    compute_config['agent_servers']['agents_keypair']))
+            try:
+                self._copy_files_to_manager(
+                    ssh,
+                    management_server_config['userhome_on_management'],
+                    self.config['Amazon Credentials'],
+                    self._get_private_key_path_from_keypair_config(
+                        compute_config['agent_servers']['agents_keypair']))
+            except Exception:
+                lgr.debug("Failed to copy Amazon credentials files")
 
             with settings(host_string=mgmt_ip), hide('running'):
-
                 lgr.info('downloading cloudify components package...')
-                self._download_package(
-                    cosmo_config['cloudify_packages_path'],
-                    cosmo_config['cloudify_components_package_url'])
+                try:
+                    self._download_package(
+                        cosmo_config['cloudify_packages_path'],
+                        cosmo_config['cloudify_components_package_url'])
 
-                lgr.info('downloading cloudify package...')
-                self._download_package(
-                    cosmo_config['cloudify_packages_path'],
-                    cosmo_config['cloudify_package_url'])
+                    lgr.info('downloading cloudify package...')
+                    self._download_package(
+                        cosmo_config['cloudify_packages_path'],
+                        cosmo_config['cloudify_package_url'])
+                except:
+                    lgr.error('failed to download cloudify packages. '
+                              'please ensure packages exist in their '
+                              'configured locations in the config file')
+                    return False
 
                 lgr.info('unpacking cloudify packages...')
-                self._unpack(
-                    cosmo_config['cloudify_packages_path'])
+                try:
+                    self._unpack(
+                        cosmo_config['cloudify_packages_path'])
 
-                lgr.debug('verifying verbosity for installation process')
-                v = self.verbose_output
-                self.verbose_output = True
+                    lgr.debug('verifying verbosity for installation process')
+                    v = self.verbose_output
+                    self.verbose_output = True
+                except:
+                    lgr.error('failed to unpack cloudify packages')
+                    return False
 
                 lgr.info('installing cloudify on {0}...'.format(mgmt_ip))
-                self._run('sudo %s/cloudify3-components-bootstrap.sh' %
-                          cosmo_config['cloudify_components_package_path'])
+                try:
+                    self._run('sudo %s/cloudify3-components-bootstrap.sh' %
+                              cosmo_config['cloudify_components_package_path'])
 
-                self._run('sudo %s/cloudify3-bootstrap.sh' %
-                          cosmo_config['cloudify_package_path'])
+                    self._run('sudo %s/cloudify3-bootstrap.sh' %
+                              cosmo_config['cloudify_package_path'])
+                except:
+                    lgr.error('failed to install manager')
+                    return False
 
                 lgr.debug('setting verbosity to previous state')
                 self.verbose_output = v
+                return True
         else:
             try:
                 self._copy_files_to_manager(
@@ -453,6 +478,9 @@ class CosmoOnAwsBootstrapper(object):
                 self._exec_command_on_manager(ssh, run_script_command)
 
                 lgr.debug('rebuilding cosmo on manager')
+            except:
+                lgr.error('failed to install manager using the script')
+                return False
             finally:
                 ssh.close()
 
@@ -831,6 +859,50 @@ class AwsServerCreator(CreateOrEnsureExistsAws):
             server = self.aws_client.get_all_instances(instance_ids=str(server.instances[0].id))[0]
 
         return server.instances[0]
+
+
+class AwsConfigFileValidator:
+
+    def _validate_schema(self, provider_config, schema):
+        global validated
+        v = Draft4Validator(schema)
+        if v.iter_errors(provider_config):
+            errors = ';\n'.join('config file validation error found at key:'
+                                ' %s, %s' % ('.'.join(e.path), e.message)
+                                for e in v.iter_errors(provider_config))
+        try:
+            v.validate(provider_config)
+        except ValidationError:
+            validated = False
+            lgr.error('{0}'.format(errors))
+
+    def _validate_cidr(self, field, cidr):
+        global validated
+        try:
+            IP(cidr)
+        except ValueError as e:
+            validated = False
+            lgr.error('config file validation error found at key:'
+                      ' {0}. {1}'.format(field, e.message))
+
+
+def _validate_config(provider_config, schema=AWS_SCHEMA):
+    global validated
+    validated = True
+    verifier = AwsConfigFileValidator()
+
+    lgr.info('validating provider configuration file...')
+
+    verifier._validate_cidr('networking.management_security_group.cidr',
+                            provider_config['networking']
+                            ['management_security_group']['cidr'])
+    verifier._validate_schema(provider_config, schema)
+
+    if validated:
+        lgr.info('provider configuration file validated successfully')
+    else:
+        lgr.error('provider configuration validation failed!')
+        sys.exit(1)
 
 
 class AwsConnector(object):
