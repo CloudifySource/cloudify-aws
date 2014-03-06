@@ -1,12 +1,12 @@
 Amazon Credentials:
-    accesskey: 
-    secretkey: 
+    accesskey: AKIAIODERLRV37AHKJJA
+    secretkey: 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
     region: us-east-1
 compute:
     management_server:
         #floating_ip: [FLOATING_IP] #uncomment and provide preallocated ip to disable auto-allocation of new IP on each run
-        user_on_management: ec2-user
-        userhome_on_management: /home/ec2-user
+        user_on_management: ubuntu
+        userhome_on_management: /home/ubuntu
         instance:
             externally_provisioned: 0
             name: cloudify-management-server

@@ -121,18 +121,31 @@ def bootstrap(config_path=None, is_verbose_output=False,
     server_creator = AwsServerCreator(connector)
     sg_creator = AwsSecurityGroupCreator(connector)
 
+    server_killer = AwsServerKiller(connector)
+
     bootstrapper = CosmoOnAwsBootstrapper(
         provider_config, network_creator, subnet_creator, router_creator,
-        sg_creator, floating_ip_creator, keypair_creator, server_creator)
-    mgmt_ip = bootstrapper.do(bootstrap_using_script)
+        sg_creator, floating_ip_creator, keypair_creator, server_creator, server_killer)
+    mgmt_ip = bootstrapper.do(provider_config, bootstrap_using_script)
     return mgmt_ip
 
 
-def teardown(management_ip, is_verbose_output=False):
+def teardown(is_verbose_output=False, config_path=None):
     _set_global_verbosity_level(is_verbose_output)
 
-    lgr.debug('NOT YET IMPLEMENTED')
-    raise RuntimeError('NOT YET IMPLEMENTED')
+    provider_config = _read_config(config_path)
+
+    connector = AwsConnector(provider_config)
+    keypair_killer = AwsKeypairKiller(connector)
+    server_killer = AwsServerKiller(connector)
+    sg_killer = AwsSgKiller(connector)
+
+    killer = CosmoOnAwsKiller(
+        provider_config, sg_killer, keypair_killer,
+        server_killer)
+    mgmt_id = killer.do(provider_config, bootstrap_using_script=True)
+    return mgmt_id
+
 
 
 def _set_global_verbosity_level(is_verbose_output=False):
@@ -208,7 +221,7 @@ class CosmoOnAwsBootstrapper(object):
 
     def __init__(self, provider_config, network_creator, subnet_creator,
                  router_creator, sg_creator, floating_ip_creator,
-                 keypair_creator, server_creator):
+                 keypair_creator, server_creator, server_killer):
         self.config = provider_config
         self.network_creator = network_creator
         self.subnet_creator = subnet_creator
@@ -217,14 +230,25 @@ class CosmoOnAwsBootstrapper(object):
         self.floating_ip_creator = floating_ip_creator
         self.keypair_creator = keypair_creator
         self.server_creator = server_creator
+        self.server_killer = server_killer
 
         global verbose_output
         self.verbose_output = verbose_output
 
-    def do(self, bootstrap_using_script):
+    def do(self, provider_config, bootstrap_using_script):
         mgmt_ip = self._create_topology()
-        self._bootstrap_manager(mgmt_ip, bootstrap_using_script)
-        return mgmt_ip
+        if mgmt_ip is not None:
+            installed = self._bootstrap_manager(mgmt_ip,
+                                                bootstrap_using_script)
+        if mgmt_ip and installed:
+            return mgmt_ip
+        else:
+            lgr.info('tearing down manager server due to bootstrap failure')
+            server_name = provider_config['compute']['management_server']['instance']['name']
+            servers = self.server_killer.list_objects_with_name(server_name)
+            self.server_killer.kill(servers)
+            lgr.info('server terminated')
+            sys.exit(1)
 
     def _create_topology(self):
         compute_config = self.config['compute']
@@ -621,6 +645,66 @@ class CreateOrEnsureExists(object):
                                             self.__class__.WHAT))
 
 
+class CosmoOnAwsKiller(object):
+    """ Teardown Cosmo on Aws """
+
+    def __init__(self, provider_config, sg_killer,
+                 keypair_killer, server_killer):
+        self.config = provider_config
+        self.sg_killer = sg_killer
+        self.keypair_killer = keypair_killer
+        self.server_killer = server_killer
+
+        global verbose_output
+        self.verbose_output = verbose_output
+
+    def do(self, provider_config, bootstrap_using_script):
+        lgr.info('Tearing down manager server')
+        server_id = "Tear down with invalid IP"
+        try:
+            server_name = provider_config['compute']['management_server']['instance']['name']
+            servers = self.server_killer.list_objects_with_name(server_name)
+            if servers:
+                lgr.debug(servers)
+                server_id = self.server_killer.kill(servers)
+                lgr.info('server terminated')
+            else:
+                lgr.info("Server with name '{0}' not Found".format(server_name))
+        except:
+            lgr.info("Tearing down manager server failed")
+
+        try:
+            keypair_list = [provider_config['compute']['management_server']
+                       ['management_keypair']['name'],
+                       provider_config['compute']['agent_servers']['agents_keypair']['name']]
+
+            for kp_name in keypair_list:
+                keypair = self.keypair_killer.list_objects_with_name(kp_name)
+                if keypair:
+                    lgr.debug(keypair)
+                    self.keypair_killer.kill(keypair)
+                    lgr.info('Keypairs Deleted')
+                else:
+                    lgr.info("Keypair with name '{0}' not found".format(kp_name))
+        except:
+            lgr.info("Keypair deletion failed")
+
+        try:
+            sg_list = [provider_config['networking']['agents_security_group']['name'],
+                       provider_config['networking']['management_security_group']['name']]
+            for sg_name in sg_list:
+                sgs = self.sg_killer.list_objects_with_name(sg_name)
+                if sgs:
+                    self.sg_killer.kill(sgs)
+                    lgr.info('SecurityGroups Deleted')
+                else:
+                    lgr.info("SecurityGroup with name '{0}' Not found".format(sg_name))
+        except:
+            lgr.info("SecurityGroup deletion failed, May be Instances running with that Security group")
+
+        return server_id
+
+
 class CreateOrEnsureExistsAws(CreateOrEnsureExists):
     def __init__(self, connector):
         CreateOrEnsureExists.__init__(self)
@@ -746,7 +830,7 @@ class AwsServerCreator(CreateOrEnsureExistsAws):
 
     def list_objects_with_name(self, name):
         servers = self.aws_client.get_all_instances()
-        return [{"image_id": i.id, "state": i.state, "name": i.tags["Name"]}
+        return [{"instance_id": i.id, "image_id": i.image_id, "state": i.state, "name": i.tags["Name"]}
                 for r in servers for i in r.instances if i.tags if i.tags["Name"] == name]
 
     def create(self, name, server_config, management_server_keypair_name,
@@ -903,6 +987,65 @@ def _validate_config(provider_config, schema=AWS_SCHEMA):
     else:
         lgr.error('provider configuration validation failed!')
         sys.exit(1)
+
+
+class AwsServerKiller(CreateOrEnsureExistsAws):
+    WHAT = 'server killer'
+
+    def list_objects_with_name(self, name):
+        servers = self.aws_client.get_all_instances()
+        return [{"instance_id": i.id, "image_id": i.image_id, "state": i.state, "name": i.tags["Name"]}
+                for r in servers for i in r.instances if i.tags if i.tags["Name"] == name]
+
+    def kill(self, servers):
+        for server in servers:
+            lgr.debug('killing server: {0}'.format(server["name"]))
+            self.aws_client.terminate_instances(server['instance_id'])
+            self._wait_for_server_to_terminate(server)
+            return server["instance_id"]
+
+    def _wait_for_server_to_terminate(self, server):
+        timeout = 20
+        while server["state"] == "running":
+            timeout -= 2
+            if timeout <= 0:
+                raise RuntimeError('Server failed to terminate in time')
+            time.sleep(2)
+            try:
+                ser_obj = self.aws_client.get_all_instances(
+                    instance_ids=str(server["instance_id"]))[0].instances[0]
+                server = {"instance_id": ser_obj.id, "image_id": ser_obj.image_id,
+                          "state": ser_obj.state, "name": ser_obj.tags["Name"]}
+            except RuntimeError:
+                pass
+
+
+class AwsKeypairKiller(CreateOrEnsureExistsAws):
+    WHAT = 'keypair killer'
+
+    def list_objects_with_name(self, name):
+        keypairs = self.aws_client.get_key_pair(name) or []
+        return keypairs
+
+    def kill(self, keypair):
+        lgr.debug('Deleting Keypair: {0}'.format(keypair.name))
+        self.aws_client.delete_key_pair(key_name=keypair.name)
+
+
+class AwsSgKiller(CreateOrEnsureExistsAws):
+    WHAT = 'sg killer'
+
+    def list_objects_with_name(self, name):
+        sgs = self.aws_client.get_all_security_groups(groupnames=None,
+                                                      group_ids=None,
+                                                      filters=None)
+        #lgr.debug(sgs)
+        return [{'id': sg.id, "name": sg.name} for sg in sgs if sg.name == name]
+
+    def kill(self, sgs):
+        for sg in sgs:
+            lgr.debug('Deleting: {0}'.format(sg["name"]))
+            self.aws_client.delete_security_group(name=sg["name"], group_id=sg["id"])
 
 
 class AwsConnector(object):
