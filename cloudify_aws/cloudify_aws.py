@@ -321,6 +321,7 @@ class CosmoOnAwsBootstrapper(object):
         asg_id, agent_sg_created = self.sg_creator.create_or_ensure_exists(
             asgconf,
             asgconf['name'],
+            False,
             'Cosmo created machines',
             [])
 
