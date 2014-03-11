@@ -321,7 +321,7 @@ class CosmoOnAwsBootstrapper(object):
         asg_id, agent_sg_created = self.sg_creator.create_or_ensure_exists(
             asgconf,
             asgconf['name'],
-            False,
+            True,
             'Cosmo created machines',
             [])
 
@@ -906,8 +906,8 @@ class AwsKeypairCreator(CreateOrEnsureExistsAws):
     WHAT = 'keypair'
 
     def list_objects_with_name(self, name):
-        keypairs = self.aws_client.get_key_pair(name) or []
-        return keypairs
+        keypairs = [self.aws_client.get_key_pair(name)] or []
+        return [{'id': kp.name} for kp in keypairs]
 
     def create(self, key_name, private_key_target_path=None,
                public_key_filepath=None, *args, **kwargs):
@@ -1058,12 +1058,13 @@ class AwsServerKiller(CreateOrEnsureExistsAws):
     def list_objects_by_ip(self, ip):
         server = self.aws_client.get_all_instances(
             filters={'ip_address': ip})
-        return server
+        return [{"instance_id": i.id, "image_id": i.image_id, "state": i.state, "name": i.tags["Name"]}
+                for r in server for i in r.instances]
 
     def kill(self, servers):
         for server in servers:
             lgr.debug('killing server: {0}'.format(server["name"]))
-            self.aws_client.terminate_instances(server['instance_id'])
+            self.aws_client.terminate_instances(instance_ids=[server['instance_id']])
             self._wait_for_server_to_terminate(server)
             return server["instance_id"]
 
