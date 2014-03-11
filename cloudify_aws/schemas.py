@@ -61,7 +61,6 @@ AWS_SCHEMA = {
             "required":[
                 'management_server',
                 'agent_servers',
-                'region'
             ],
             "properties":{
                 "agent_servers": {
@@ -134,9 +133,6 @@ AWS_SCHEMA = {
                             "type":"string",
                         }
                     }
-                },
-                "region": {
-                    "type":"string",
                 }
             }
         },
