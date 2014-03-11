@@ -9,12 +9,12 @@ compute:
         user_on_management: ubuntu
         userhome_on_management: /home/ubuntu
         instance:
-            externally_provisioned: 0
+            use_existing: False
             name: cloudify-management-server
             image_id: ami-013f9768
             instance_type: t1.micro
         management_keypair:
-            externally_provisioned: 0
+            use_existing: False
             name: cloudify-management-kp
             #provided:
                 #public_key_filepath: [PUBLIC-KEY-PATH]
@@ -23,7 +23,7 @@ compute:
                 private_key_target_path: ~/.ssh/cloudify-management-kp.pem
     agent_servers:
         agents_keypair:
-            externally_provisioned: 0
+            use_existing: False
             name: cloudify-agents-kp
             #provided:
                 #public_key_filepath: [PUBLIC-KEY-PATH]
@@ -32,7 +32,7 @@ compute:
                 private_key_target_path: ~/.ssh/cloudify-agents-kp.pem
 networking:
     agents_security_group:
-            externally_provisioned: 0
+            use_existing: False
             name: cloudify-sg-agents
     management_security_group:
         externally_provisioned: 0

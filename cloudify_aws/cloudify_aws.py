@@ -54,10 +54,12 @@ from boto.ec2 import connect_to_region
 from boto.ec2.instanceinfo import InstanceInfo
 from boto.vpc import VPCConnection
 
-EP_FLAG = 'externally_provisioned'
+EP_FLAG = 'use_existing'
 
-EXTERNAL_PORTS = (22, 8100)  # SSH, REST service
-INTERNAL_PORTS = (5555, 5672, 53229)  # Riemann, RabbitMQ, FileServer
+EXTERNAL_MGMT_PORTS = (22, 8100)  # SSH, REST service
+INTERNAL_MGMT_PORTS = (5555, 5672, 53229)  # Riemann, RabbitMQ, FileServer
+
+INTERNAL_AGENT_PORTS = (22,)
 
 SSH_CONNECT_RETRIES = 15
 SSH_CONNECT_SLEEP = 10
@@ -71,18 +73,25 @@ verbose_output = False
 
 
 #initialize logger
+if os.path.isfile(config.LOG_DIR):
+    sys.exit('file {0} exists - cloudify log directory cannot be created '
+             'there. please remove the file and try again.'
+             .format(config.LOG_DIR))
 try:
-    d = os.path.dirname(config.LOGGER['handlers']['file']['filename'])
+    logfile = config.LOGGER['handlers']['file']['filename']
+    d = os.path.dirname(logfile)
     if not os.path.exists(d):
         os.makedirs(d)
     logging.config.dictConfig(config.LOGGER)
     lgr = logging.getLogger('main')
     lgr.setLevel(logging.INFO)
+    flgr = logging.getLogger('file')
+    flgr.setLevel(logging.DEBUG)
 except ValueError:
     sys.exit('could not initialize logger.'
              ' verify your logger config'
              ' and permissions to write to {0}'
-             .format(config.LOGGER['handlers']['file']['filename']))
+             .format(logfile))
 
 # http://stackoverflow.com/questions/8144545/turning-off-logging-in-paramiko
 logging.getLogger("paramiko").setLevel(logging.WARNING)
@@ -107,11 +116,12 @@ def init(target_directory, reset_config, is_verbose_output=False):
 
 
 def bootstrap(config_path=None, is_verbose_output=False,
-              bootstrap_using_script=True):
+              bootstrap_using_script=True, keep_up=False):
     _set_global_verbosity_level(is_verbose_output)
     provider_config = _read_config(config_path)
+    _validate_config(provider_config)
+
     connector = AwsConnector(provider_config)
-    lgr.debug(connector.aws_status())
     network_creator = AwsNetworkCreator(connector)
     subnet_creator = AwsSubnetCreator(connector)
     router_creator = AwsRouterCreator(connector)
@@ -126,11 +136,11 @@ def bootstrap(config_path=None, is_verbose_output=False,
     bootstrapper = CosmoOnAwsBootstrapper(
         provider_config, network_creator, subnet_creator, router_creator,
         sg_creator, floating_ip_creator, keypair_creator, server_creator, server_killer)
-    mgmt_ip = bootstrapper.do(provider_config, bootstrap_using_script)
+    mgmt_ip = bootstrapper.do(provider_config, bootstrap_using_script, keep_up)
     return mgmt_ip
 
 
-def teardown(is_verbose_output=False, config_path=None):
+def teardown(mgmt_ip, is_verbose_output=False, config_path=None):
     _set_global_verbosity_level(is_verbose_output)
 
     provider_config = _read_config(config_path)
@@ -141,11 +151,9 @@ def teardown(is_verbose_output=False, config_path=None):
     sg_killer = AwsSgKiller(connector)
 
     killer = CosmoOnAwsKiller(
-        provider_config, sg_killer, keypair_killer,
+        provider_config, mgmt_ip, sg_killer, keypair_killer,
         server_killer)
-    mgmt_id = killer.do(provider_config, bootstrap_using_script=True)
-    return mgmt_id
-
+    killer.do()
 
 
 def _set_global_verbosity_level(is_verbose_output=False):
@@ -216,6 +224,49 @@ def _mkdir_p(path):
         raise
 
 
+def _validate_config(provider_config, schema=AWS_SCHEMA):
+    global validated
+    validated = True
+    verifier = AwsConfigFileValidator()
+
+    lgr.info('validating provider configuration file...')
+
+    verifier._validate_cidr('networking.management_security_group.cidr',
+                            provider_config['networking']
+                            ['management_security_group']['cidr'])
+    verifier._validate_schema(provider_config, schema)
+
+    if validated:
+        lgr.info('provider configuration file validated successfully')
+    else:
+        lgr.error('provider configuration validation failed!')
+        sys.exit(1)
+
+
+class AwsConfigFileValidator:
+    def _validate_schema(self, provider_config, schema):
+        global validated
+        v = Draft4Validator(schema)
+        if v.iter_errors(provider_config):
+            errors = ';\n'.join('config file validation error found at key:'
+                                ' %s, %s' % ('.'.join(e.path), e.message)
+                                for e in v.iter_errors(provider_config))
+        try:
+            v.validate(provider_config)
+        except ValidationError:
+            validated = False
+            lgr.error('{0}'.format(errors))
+
+    def _validate_cidr(self, field, cidr):
+        global validated
+        try:
+            IP(cidr)
+        except ValueError as e:
+            validated = False
+            lgr.error('config file validation error found at key:'
+                      ' {0}. {1}'.format(field, e.message))
+
+
 class CosmoOnAwsBootstrapper(object):
     """ Bootstraps Cosmo on Aws """
 
@@ -235,20 +286,29 @@ class CosmoOnAwsBootstrapper(object):
         global verbose_output
         self.verbose_output = verbose_output
 
-    def do(self, provider_config, bootstrap_using_script):
-        mgmt_ip = self._create_topology()
+    def do(self, provider_config, bootstrap_using_script, keep_up):
+        mgmt_ip, private_ip = self._create_topology()
         if mgmt_ip is not None:
-            installed = self._bootstrap_manager(mgmt_ip,
+            installed = self._bootstrap_manager(mgmt_ip, private_ip,
                                                 bootstrap_using_script)
         if mgmt_ip and installed:
             return mgmt_ip
         else:
-            lgr.info('tearing down manager server due to bootstrap failure')
-            server_name = provider_config['compute']['management_server']['instance']['name']
-            servers = self.server_killer.list_objects_with_name(server_name)
-            self.server_killer.kill(servers)
-            lgr.info('server terminated')
-            sys.exit(1)
+            if keep_up:
+                lgr.info('manager server will remain up')
+                sys.exit(1)
+            else:
+                lgr.info('tearing down manager server due to '
+                         'bootstrap failure')
+                #server_name = provider_config['compute']
+                #['management_server']['instance']['name']
+                server = self.server_killer.list_objects_by_ip(mgmt_ip)
+                if server is not None:
+                    self.server_killer.kill(servers)
+                    lgr.info('server terminated')
+                else:
+                    lgr.info('server is not up, exiting')
+                sys.exit(1)
 
     def _create_topology(self):
         compute_config = self.config['compute']
@@ -258,7 +318,7 @@ class CosmoOnAwsBootstrapper(object):
         # Security group for Cosmo created instances
         asgconf = self.config['networking']['agents_security_group']
         lgr.debug(asgconf)
-        asg_id = self.sg_creator.create_or_ensure_exists(
+        asg_id, agent_sg_created = self.sg_creator.create_or_ensure_exists(
             asgconf,
             asgconf['name'],
             'Cosmo created machines',
@@ -268,19 +328,26 @@ class CosmoOnAwsBootstrapper(object):
         # instances -> manager communication
         msgconf = self.config['networking']['management_security_group']
         sg_rules = \
-            [{'port': p, 'group_id': asg_id} for p in INTERNAL_PORTS] + \
-            [{'port': p, 'cidr': msgconf['cidr']} for p in EXTERNAL_PORTS]
+            [{'port': p, 'group_id': asg_id} for p in INTERNAL_MGMT_PORTS] + \
+            [{'port': p, 'cidr': msgconf['cidr']} for p in EXTERNAL_MGMT_PORTS]
         msg_id = self.sg_creator.create_or_ensure_exists(
             msgconf,
             msgconf['name'],
+            False,
             'Cosmo Manager',
             sg_rules)
+
+        if agent_sg_created:
+            self.sg_creator.add_rules(asg_id,
+                                      [{'port': port, 'group_id': msg_id}
+                                       for port in INTERNAL_AGENT_PORTS])
 
         # Keypairs setup
         mgr_kpconf = compute_config['management_server']['management_keypair']
         self.keypair_creator.create_or_ensure_exists(
             mgr_kpconf,
             mgr_kpconf['name'],
+            False,
             private_key_target_path=
             mgr_kpconf['auto_generated']['private_key_target_path'] if
             'auto_generated' in mgr_kpconf else None,
@@ -292,6 +359,7 @@ class CosmoOnAwsBootstrapper(object):
         self.keypair_creator.create_or_ensure_exists(
             agents_kpconf,
             agents_kpconf['name'],
+            False,
             private_key_target_path=agents_kpconf['auto_generated']
             ['private_key_target_path'] if 'auto_generated' in
                                            agents_kpconf else None,
@@ -303,6 +371,7 @@ class CosmoOnAwsBootstrapper(object):
         server_id = self.server_creator.create_or_ensure_exists(
             insconf,
             insconf['name'],
+            False,
             {k: v for k, v in insconf.iteritems() if k != EP_FLAG},
             mgr_kpconf['name'],
             msgconf['name'],
@@ -349,7 +418,7 @@ class CosmoOnAwsBootstrapper(object):
     def _run(self, command):
         self._run_with_retries(command)
 
-    def _bootstrap_manager(self, mgmt_ip, bootstrap_using_script):
+    def _bootstrap_manager(self, mgmt_ip, private_ip, bootstrap_using_script):
         lgr.info('initializing manager on the machine at {0}'
                  .format(mgmt_ip))
         compute_config = self.config['compute']
@@ -497,7 +566,8 @@ class CosmoOnAwsBootstrapper(object):
                                      '--config_dir={2} ' \
                                      '--install_openstack_provisioner ' \
                                      '--install_logstash' \
-                    .format(workingdir, version, configdir)
+                                     '--management_ip={3}' \
+                    .format(workingdir, version, configdir, private_ip)
                 run_script_command += ' {0}'.format(SHELL_PIPE_TO_LOGGER)
                 self._exec_command_on_manager(ssh, run_script_command)
 
@@ -507,6 +577,7 @@ class CosmoOnAwsBootstrapper(object):
                 return False
             finally:
                 ssh.close()
+            return True
 
     def _create_ssh_channel_with_mgmt(self, mgmt_ip, management_key_path,
                                       user_on_management):
@@ -595,21 +666,43 @@ class AwsLogicError(RuntimeError):
 class CreateOrEnsureExists(object):
     WHAT = None
 
-    def create_or_ensure_exists(self, provider_config, name, *args, **kw):
-        # config hash is only used for 'externally_provisioned' attribute
-        if EP_FLAG in provider_config and provider_config[EP_FLAG]:
-            method = 'ensure_exists'
-        else:
-            method = 'check_and_create'
-        return getattr(self, method)(name, *args, **kw)
-
-    def check_and_create(self, name, *args, **kw):
+    def _create(self, name, *args, **kw):
         lgr.debug("Will create {0} '{1}'".format(
             self.__class__.WHAT, name))
-        if self.list_objects_with_name(name):
-            raise AwsLogicError("{0} '{1}' already exists".format(
-                self.__class__.WHAT, name))
         return self.create(name, *args, **kw)
+
+    def _check(self, name, *args, **kw):
+        lgr.debug("Checking to see if {0} '{1}' already exists".format(
+            self.__class__.WHAT, name))
+        if self.list_objects_with_name(name):
+            lgr.debug("{0} '{1}' already exists".format(
+                self.__class__.WHAT, name))
+            return True
+        else:
+            lgr.debug("{0} '{1}' does not exist".format(
+                self.__class__.WHAT, name))
+            return False
+
+    def create_or_ensure_exists(self, provider_config, name, return_created,
+                                *args, **kw):
+        # config hash is only used for 'externally_provisioned' attribute
+        if self._check(name, *args, **kw):
+            if self.__class__.WHAT in ('server'):
+                raise AwsLogicError("{0} '{1}' already exists".format(
+                    self.__class__.WHAT, name))
+            the_id = self.ensure_exists(name, *args, **kw)
+            created = False
+        else:
+            if EP_FLAG in provider_config and provider_config[EP_FLAG]:
+                raise AwsLogicError("{0} '{1}' is configured to 'use_"
+                                    "existing' but does not exist"
+                                    .format(self.__class__.WHAT, name))
+            the_id = self._create(name, *args, **kw)
+            created = True
+        if return_created:
+            return the_id, created
+        else:
+            return the_id
 
     def ensure_exists(self, name, *args, **kw):
         lgr.debug("Will use existing {0} '{1}'"
@@ -648,9 +741,10 @@ class CreateOrEnsureExists(object):
 class CosmoOnAwsKiller(object):
     """ Teardown Cosmo on Aws """
 
-    def __init__(self, provider_config, sg_killer,
+    def __init__(self, provider_config, mgmt_ip, sg_killer,
                  keypair_killer, server_killer):
         self.config = provider_config
+        self.mgmt_ip = mgmt_ip
         self.sg_killer = sg_killer
         self.keypair_killer = keypair_killer
         self.server_killer = server_killer
@@ -658,25 +752,29 @@ class CosmoOnAwsKiller(object):
         global verbose_output
         self.verbose_output = verbose_output
 
-    def do(self, provider_config, bootstrap_using_script):
+    def do(self):
+        self._kill_topology()
+        self._kill_keypair()
+        self._kill_sg()
+
+    def _kill_topology(self):
         lgr.info('Tearing down manager server')
         server_id = "Tear down with invalid IP"
         try:
-            server_name = provider_config['compute']['management_server']['instance']['name']
-            servers = self.server_killer.list_objects_with_name(server_name)
-            if servers:
-                lgr.debug(servers)
-                server_id = self.server_killer.kill(servers)
+            server = self.server_killer.list_objects_by_ip(self.mgmt_ip)
+            if server:
+                self.server_killer.kill(server)
                 lgr.info('server terminated')
             else:
-                lgr.info("Server with name '{0}' not Found".format(server_name))
+                lgr.info("No servers found for ip: '{0}'".format(self.mgmt_ip))
         except:
             lgr.info("Tearing down manager server failed")
 
+    def _kill_keypair(self):
         try:
-            keypair_list = [provider_config['compute']['management_server']
-                       ['management_keypair']['name'],
-                       provider_config['compute']['agent_servers']['agents_keypair']['name']]
+            keypair_list = [self.config['compute']['management_server']
+                            ['management_keypair']['name'],
+                            self.config['compute']['agent_servers']['agents_keypair']['name']]
 
             for kp_name in keypair_list:
                 keypair = self.keypair_killer.list_objects_with_name(kp_name)
@@ -689,9 +787,10 @@ class CosmoOnAwsKiller(object):
         except:
             lgr.info("Keypair deletion failed")
 
+    def _kill_sg(self):
         try:
-            sg_list = [provider_config['networking']['agents_security_group']['name'],
-                       provider_config['networking']['management_security_group']['name']]
+            sg_list = [self.config['networking']['agents_security_group']['name'],
+                       self.config['networking']['management_security_group']['name']]
             for sg_name in sg_list:
                 sgs = self.sg_killer.list_objects_with_name(sg_name)
                 if sgs:
@@ -701,8 +800,6 @@ class CosmoOnAwsKiller(object):
                     lgr.info("SecurityGroup with name '{0}' Not found".format(sg_name))
         except:
             lgr.info("SecurityGroup deletion failed, May be Instances running with that Security group")
-
-        return server_id
 
 
 class CreateOrEnsureExistsAws(CreateOrEnsureExists):
@@ -789,15 +886,19 @@ class AwsSecurityGroupCreator(CreateOrEnsureExistsAws):
     def create(self, name, description, rules):
         sg = self.aws_client.create_security_group(name, description,
                                                    vpc_id=None)
+
+        self.add_rules(sg.id, rules)
+        return sg.id
+
+    def add_rules(self, sg_id, rules):
         for rule in rules:
             self.aws_client.authorize_security_group(
                 ip_protocol="tcp",
                 from_port=rule['port'],
                 to_port=rule['port'],
                 cidr_ip=rule.get('cidr'),
-                group_id=sg.id
+                group_id=sg_id
             )
-        return sg.id
 
 
 class AwsKeypairCreator(CreateOrEnsureExistsAws):
@@ -891,7 +992,7 @@ class AwsServerCreator(CreateOrEnsureExistsAws):
         ##Assign name to server
         self.aws_client.create_tags([server.id], {"Name": server_name})
 
-        return server.ip_address
+        return server.ip_address, server.private_ip_address
 
     def add_floating_ip(self, server_id, ip):
 
@@ -945,50 +1046,6 @@ class AwsServerCreator(CreateOrEnsureExistsAws):
         return server.instances[0]
 
 
-class AwsConfigFileValidator:
-
-    def _validate_schema(self, provider_config, schema):
-        global validated
-        v = Draft4Validator(schema)
-        if v.iter_errors(provider_config):
-            errors = ';\n'.join('config file validation error found at key:'
-                                ' %s, %s' % ('.'.join(e.path), e.message)
-                                for e in v.iter_errors(provider_config))
-        try:
-            v.validate(provider_config)
-        except ValidationError:
-            validated = False
-            lgr.error('{0}'.format(errors))
-
-    def _validate_cidr(self, field, cidr):
-        global validated
-        try:
-            IP(cidr)
-        except ValueError as e:
-            validated = False
-            lgr.error('config file validation error found at key:'
-                      ' {0}. {1}'.format(field, e.message))
-
-
-def _validate_config(provider_config, schema=AWS_SCHEMA):
-    global validated
-    validated = True
-    verifier = AwsConfigFileValidator()
-
-    lgr.info('validating provider configuration file...')
-
-    verifier._validate_cidr('networking.management_security_group.cidr',
-                            provider_config['networking']
-                            ['management_security_group']['cidr'])
-    verifier._validate_schema(provider_config, schema)
-
-    if validated:
-        lgr.info('provider configuration file validated successfully')
-    else:
-        lgr.error('provider configuration validation failed!')
-        sys.exit(1)
-
-
 class AwsServerKiller(CreateOrEnsureExistsAws):
     WHAT = 'server killer'
 
@@ -996,6 +1053,11 @@ class AwsServerKiller(CreateOrEnsureExistsAws):
         servers = self.aws_client.get_all_instances()
         return [{"instance_id": i.id, "image_id": i.image_id, "state": i.state, "name": i.tags["Name"]}
                 for r in servers for i in r.instances if i.tags if i.tags["Name"] == name]
+
+    def list_objects_by_ip(self, ip):
+        server = self.aws_client.get_all_instances(
+            filters={'ip_address': ip})
+        return server
 
     def kill(self, servers):
         for server in servers:
