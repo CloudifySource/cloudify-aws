@@ -906,7 +906,7 @@ class AwsKeypairCreator(CreateOrEnsureExistsAws):
     WHAT = 'keypair'
 
     def list_objects_with_name(self, name):
-        keypairs = [self.aws_client.get_key_pair(name)] or []
+        keypairs = filter(None,[self.aws_client.get_key_pair(name)])
         return [{'id': kp.name} for kp in keypairs]
 
     def create(self, key_name, private_key_target_path=None,
