@@ -323,7 +323,7 @@ class CosmoOnAwsBootstrapper(object):
             asgconf['name'],
             True,
             'Cosmo created machines',
-            [])
+            rules=[])
 
         # Security group for Cosmo manager, allows created
         # instances -> manager communication
@@ -336,7 +336,7 @@ class CosmoOnAwsBootstrapper(object):
             msgconf['name'],
             False,
             'Cosmo Manager',
-            sg_rules)
+            rules=sg_rules)
 
         if agent_sg_created:
             self.sg_creator.add_rules(asg_id,
