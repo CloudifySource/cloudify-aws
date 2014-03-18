@@ -195,7 +195,7 @@ def _read_config(config_file_path):
     #lgr.debug('merging configs')
     merged_config = _deep_merge_dictionaries(user_config, defaults_config) \
         if user_config else defaults_config
-    lgr.debug(merged_config)
+    #lgr.debug(merged_config)
     return merged_config
 
 
