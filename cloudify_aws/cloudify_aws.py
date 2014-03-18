@@ -126,10 +126,6 @@ def bootstrap(config_path=None, is_verbose_output=False,
     _validate_config(provider_config)
 
     connector = AwsConnector(provider_config)
-    network_creator = AwsNetworkCreator(connector)
-    subnet_creator = AwsSubnetCreator(connector)
-    router_creator = AwsRouterCreator(connector)
-    floating_ip_creator = AwsFloatingIpCreator(connector)
 
     keypair_creator = AwsKeypairCreator(connector)
     server_creator = AwsServerCreator(connector)
@@ -138,8 +134,7 @@ def bootstrap(config_path=None, is_verbose_output=False,
     server_killer = AwsServerKiller(connector)
 
     bootstrapper = CosmoOnAwsBootstrapper(
-        provider_config, network_creator, subnet_creator, router_creator,
-        sg_creator, floating_ip_creator, keypair_creator, server_creator, server_killer)
+        provider_config, floating_ip_creator, keypair_creator, server_creator, server_killer)
     mgmt_ip = bootstrapper.do(provider_config, bootstrap_using_script, keep_up, dev_mode)
     return mgmt_ip
 
@@ -274,15 +269,10 @@ class AwsConfigFileValidator:
 class CosmoOnAwsBootstrapper(object):
     """ Bootstraps Cosmo on Aws """
 
-    def __init__(self, provider_config, network_creator, subnet_creator,
-                 router_creator, sg_creator, floating_ip_creator,
+    def __init__(self, provider_config, sg_creator,
                  keypair_creator, server_creator, server_killer):
         self.config = provider_config
-        self.network_creator = network_creator
-        self.subnet_creator = subnet_creator
-        self.router_creator = router_creator
         self.sg_creator = sg_creator
-        self.floating_ip_creator = floating_ip_creator
         self.keypair_creator = keypair_creator
         self.server_creator = server_creator
         self.server_killer = server_killer
@@ -624,7 +614,7 @@ class CosmoOnAwsBootstrapper(object):
                                      'bootstrap_lxc_manager.py ' \
                                      '--working_dir={0} --cosmo_version={1} ' \
                                      '--config_dir={2} ' \
-                                     '--install_openstack_provisioner ' \
+                                     '--install_aws_provisioner ' \
                                      '--install_logstash' \
                                      '--management_ip={3}' \
                     .format(workingdir, version, configdir, private_ip)
@@ -874,65 +864,6 @@ class CreateOrEnsureExistsAws(CreateOrEnsureExists):
 class CreateOrEnsureExistsVPC(CreateOrEnsureExists):
     def __init__(self, connector):
         CreateOrEnsureExists.__init__(self)
-
-    #     self.vpc_client = connector.get_vpc_client()
-    #     print "vpc client", self.vpc_client
-    pass
-
-
-class AwsNetworkCreator(CreateOrEnsureExistsVPC):
-    WHAT = 'network'
-    pass
-    # def list_objects_with_name(self, *vpn_id):
-    #     #return self.vpc_client.get_all_vpn_connections(vpn_connection_ids=vpn_id), "list objects"
-    #     #on hold vpc #
-    #     pass
-    #
-    # def create(self, vpn_id):
-    #     # n = vpn_id
-    #     # ret = self.vpc_client.create_vpc(cidr_block=n)
-    #     # print ret, "vpn "
-    #     #return ret['network']['id']
-    #     pass
-
-
-class AwsSubnetCreator(CreateOrEnsureExistsVPC):
-    WHAT = 'subnet'
-    pass
-    # def list_objects_with_name(self, *subnet_id):
-    #     #return self.vpc_client.get_all_subnets(subnet_ids=subnet_id, filters=None)
-    #     pass
-    #
-    # def create(self, cidr, vpc_id, zone=None):
-    #     # ret = self.vpc_client.create_subnet(self, vpc_id=vpc_id,
-    #     #                                     cidr_block=cidr,
-    #     #                                     availability_zone=zone)
-    #     # print ret, "subnet"
-    #     # return ret['subnet']['id']
-    #     pass
-
-
-class AwsFloatingIpCreator():
-    def __init__(self, connector):
-        pass
-        #self.vpc_client = connector.get_vpc_client()
-        #
-        # def allocate_ip(self, external_network_id, inst_id):
-        #     ret = self.vpc_client.associate_address(instance_id=inst_id,
-        #                                             public_ip=None,
-        #                                             allocation_id=external_network_id)
-        #     return ret
-
-
-class AwsRouterCreator(CreateOrEnsureExistsVPC):
-    WHAT = 'router'
-    pass
-    # def list_objects_with_name(self, *name):
-    #     return self.vpc_client.get_all_route_tables(route_table_ids=name, filters=None)
-    #
-    # def create(self, vpc_id):
-    #     ret = self.vpc_client.create_route_table(self, vpc_id)
-    #     return ret  #router_id
 
 
 class AwsSecurityGroupCreator(CreateOrEnsureExistsAws):
@@ -1198,19 +1129,6 @@ class AwsConnector(object):
 
     def run_aws(self):
         pass
-        # self.aws_conn.run_instances(self, image_id, min_count=1, max_count=1,
-        #               key_name=None, security_groups=None,
-        #               user_data=None, addressing_type=None,
-        #               instance_type='m1.small', placement=None,
-        #               kernel_id=None, ramdisk_id=None,
-        #               monitoring_enabled=False, subnet_id=None,
-        #               block_device_map=None,
-        #               disable_api_termination=False,
-        #               instance_initiated_shutdown_behavior=None,
-        #               private_ip_address=None,
-        #               placement_group=None, client_token=None,
-        #               security_group_ids=None):
-        #return self.aws_conn.run_instances(self.image_id)
 
     def aws_status(self):
         return InstanceInfo(connection=self.aws_conn, id=self.run_aws())
@@ -1218,10 +1136,4 @@ class AwsConnector(object):
     def get_vpc_client(self):
         return self.vpc_conn
 
-        # def create_vpc_client(self):
-        #     self.aws_conn.
-        #     return self.aws_conn.create_network_interface(subnet_id=subnet_id,
-        #                                            private_ip_address=private_ip_address,
-        #                                            description=description,
-        #                                            groups=groups)
 
