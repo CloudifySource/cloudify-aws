@@ -134,7 +134,7 @@ def bootstrap(config_path=None, is_verbose_output=False,
     server_killer = AwsServerKiller(connector)
 
     bootstrapper = CosmoOnAwsBootstrapper(
-        provider_config, floating_ip_creator, keypair_creator, server_creator, server_killer)
+        provider_config, sg_creator, keypair_creator, server_creator, server_killer)
     mgmt_ip = bootstrapper.do(provider_config, bootstrap_using_script, keep_up, dev_mode)
     return mgmt_ip
 
