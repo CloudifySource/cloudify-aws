@@ -197,7 +197,7 @@ def _read_config(config_file_path):
         lgr.debug('safe loading default config')
         defaults_config = yaml.safe_load(defaults_config_file.read())
 
-    lgr.debug('merging configs')
+    #lgr.debug('merging configs')
     merged_config = _deep_merge_dictionaries(user_config, defaults_config) \
         if user_config else defaults_config
     lgr.debug(merged_config)
@@ -658,6 +658,8 @@ class CosmoOnAwsBootstrapper(object):
                     "SSH connection to {0} failed. Waiting {1} seconds "
                     "before retrying".format(mgmt_ip, SSH_CONNECT_SLEEP))
                 time.sleep(SSH_CONNECT_SLEEP)
+            except IOError, e:
+                raise 
         raise RuntimeError('Failed to ssh connect to management server')
 
     def _copy_files_to_manager(self, ssh, userhome_on_management,
@@ -940,7 +942,7 @@ class AwsSecurityGroupCreator(CreateOrEnsureExistsAws):
         sgs = self.aws_client.get_all_security_groups(groupnames=None,
                                                       group_ids=None,
                                                       filters=None)
-        lgr.debug(sgs)
+        #lgr.debug(sgs)
         return [{'id': sg.id} for sg in sgs if sg.name == name]
 
     def create(self, name, description, rules):
@@ -966,7 +968,7 @@ class AwsKeypairCreator(CreateOrEnsureExistsAws):
 
     def list_objects_with_name(self, name):
         keypairs = filter(None,[self.aws_client.get_key_pair(name)])
-        return [{'id': kp.name} for kp in keypairs]
+        return [{'id': kp.name} for kp in keypairs if keypairs]
 
     def create(self, key_name, private_key_target_path=None,
                public_key_filepath=None, *args, **kwargs):
@@ -1125,6 +1127,7 @@ class AwsServerKiller(CreateOrEnsureExistsAws):
             lgr.debug('killing server: {0}'.format(server["name"]))
             self.aws_client.terminate_instances(instance_ids=[server['instance_id']])
             self._wait_for_server_to_terminate(server)
+            self.aws_client.delete_tags([server["instance_id"]], {"Name": server["name"]})
             return server["instance_id"]
 
     def _wait_for_server_to_terminate(self, server):
@@ -1147,7 +1150,7 @@ class AwsKeypairKiller(CreateOrEnsureExistsAws):
     WHAT = 'keypair killer'
 
     def list_objects_with_name(self, name):
-        keypairs = self.aws_client.get_key_pair(name) or []
+        keypairs = self.aws_client.get_key_pair(name)
         return keypairs
 
     def kill(self, keypair):
