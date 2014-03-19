@@ -1,11 +1,3 @@
-__author__ = 'Ganesh'
-
-'''
-Created on 24-Feb-2014
-Cloudify Amazon Provider Interface
-@author: Ganesh
-'''
-
 ########
 # Copyright (c) 2014 GigaSpaces Technologies Ltd. All rights reserved
 #
@@ -21,6 +13,8 @@ Cloudify Amazon Provider Interface
 # See the License for the specific language governing permissions and
 # limitations under the License.
 ############
+
+__author__ = 'Ganesh'
 
 # Standard
 import os
@@ -49,10 +43,11 @@ from IPy import IP
 from jsonschema import ValidationError, Draft4Validator
 from schemas import AWS_SCHEMA
 
-# Amazon
+# AWS
 from boto.ec2 import connect_to_region
 from boto.ec2.instanceinfo import InstanceInfo
 from boto.vpc import VPCConnection
+
 
 EP_FLAG = 'use_existing'
 
@@ -120,19 +115,18 @@ def init(target_directory, reset_config, is_verbose_output=False):
 
 
 def bootstrap(config_path=None, is_verbose_output=False,
-              bootstrap_using_script=True, keep_up=False, dev_mode=False):
+              bootstrap_using_script=True, keep_up=False,
+              dev_mode=False):
     _set_global_verbosity_level(is_verbose_output)
+    
     provider_config = _read_config(config_path)
     _validate_config(provider_config)
 
     connector = AwsConnector(provider_config)
-
     keypair_creator = AwsKeypairCreator(connector)
     server_creator = AwsServerCreator(connector)
     sg_creator = AwsSecurityGroupCreator(connector)
-
     server_killer = AwsServerKiller(connector)
-
     bootstrapper = CosmoOnAwsBootstrapper(
         provider_config, sg_creator, keypair_creator, server_creator, server_killer)
     mgmt_ip = bootstrapper.do(provider_config, bootstrap_using_script, keep_up, dev_mode)
@@ -148,7 +142,6 @@ def teardown(mgmt_ip, is_verbose_output=False, config_path=None):
     keypair_killer = AwsKeypairKiller(connector)
     server_killer = AwsServerKiller(connector)
     sg_killer = AwsSgKiller(connector)
-
     killer = CosmoOnAwsKiller(
         provider_config, mgmt_ip, sg_killer, keypair_killer,
         server_killer)
@@ -166,6 +159,7 @@ def _set_global_verbosity_level(is_verbose_output=False):
 
 
 def _read_config(config_file_path):
+    
     if not config_file_path:
         config_file_path = CONFIG_FILE_NAME
     defaults_config_file_path = os.path.join(
@@ -175,7 +169,6 @@ def _read_config(config_file_path):
     if not os.path.exists(config_file_path) or not os.path.exists(
             defaults_config_file_path):
         if not os.path.exists(defaults_config_file_path):
-            # noinspection PyPep8
             raise ValueError('Missing the defaults configuration file; '
                              'expected to find it at {0}'.format(
                 defaults_config_file_path))
@@ -192,10 +185,9 @@ def _read_config(config_file_path):
         lgr.debug('safe loading default config')
         defaults_config = yaml.safe_load(defaults_config_file.read())
 
-    #lgr.debug('merging configs')
+    lgr.debug('merging configs')
     merged_config = _deep_merge_dictionaries(user_config, defaults_config) \
         if user_config else defaults_config
-    #lgr.debug(merged_config)
     return merged_config
 
 
@@ -229,7 +221,6 @@ def _validate_config(provider_config, schema=AWS_SCHEMA):
     verifier = AwsConfigFileValidator()
 
     lgr.info('validating provider configuration file...')
-
     verifier._validate_cidr('networking.management_security_group.cidr',
                             provider_config['networking']
                             ['management_security_group']['cidr'])
@@ -243,6 +234,7 @@ def _validate_config(provider_config, schema=AWS_SCHEMA):
 
 
 class AwsConfigFileValidator:
+    
     def _validate_schema(self, provider_config, schema):
         global validated
         v = Draft4Validator(schema)
@@ -281,10 +273,13 @@ class CosmoOnAwsBootstrapper(object):
         self.verbose_output = verbose_output
 
     def do(self, provider_config, bootstrap_using_script, keep_up, dev_mode):
+        
         mgmt_ip, private_ip = self._create_topology()
         if mgmt_ip is not None:
-            installed = self._bootstrap_manager(mgmt_ip, private_ip,
-                                                bootstrap_using_script, dev_mode)
+            installed = self._bootstrap_manager(mgmt_ip,
+                                                private_ip,
+                                                bootstrap_using_script,
+                                                dev_mode)
         if mgmt_ip and installed:
             return mgmt_ip
         else:
@@ -306,7 +301,6 @@ class CosmoOnAwsBootstrapper(object):
 
     def _create_topology(self):
         compute_config = self.config['compute']
-
         insconf = compute_config['management_server']['instance']
 
         # Security group for Cosmo created instances
@@ -384,6 +378,7 @@ class CosmoOnAwsBootstrapper(object):
         return expanduser(path)
 
     def _run_with_retries(self, command, retries=3, sleeper=3):
+        
         for execution in range(retries):
             lgr.debug('running command: {0}'
                       .format(command))
@@ -413,7 +408,11 @@ class CosmoOnAwsBootstrapper(object):
     def _run(self, command):
         self._run_with_retries(command)
 
-    def _bootstrap_manager(self, mgmt_ip, private_ip, bootstrap_using_script, dev_mode):
+    def _bootstrap_manager(self,
+                           mgmt_ip,
+                           private_ip,
+                           bootstrap_using_script,
+                           dev_mode):
         lgr.info('initializing manager on the machine at {0}'
                  .format(mgmt_ip))
         compute_config = self.config['compute']
@@ -447,6 +446,7 @@ class CosmoOnAwsBootstrapper(object):
                             ['private_key_target_path']]
 
         if not bootstrap_using_script:
+            
             try:
                 self._copy_files_to_manager(
                     ssh,
@@ -457,7 +457,11 @@ class CosmoOnAwsBootstrapper(object):
             except Exception:
                 lgr.debug("Failed to copy Amazon credentials files")
 
-            with settings(host_string=mgmt_ip), hide('running', 'stderr', 'aborts','warnings'):
+            with settings(host_string=mgmt_ip), hide('running',
+                                                     'stderr',
+                                                     'aborts',
+                                                     'warnings'):
+                                                         
                 try:
                     lgr.info('downloading cloudify components package...')
                     self._download_package(
@@ -617,7 +621,10 @@ class CosmoOnAwsBootstrapper(object):
                                      '--install_aws_provisioner ' \
                                      '--install_logstash' \
                                      '--management_ip={3}' \
-                    .format(workingdir, version, configdir, private_ip)
+                                     .format(workingdir,
+                                     version,
+                                     configdir,
+                                     private_ip)
                 run_script_command += ' {0}'.format(SHELL_PIPE_TO_LOGGER)
                 self._exec_command_on_manager(ssh, run_script_command)
 
@@ -873,7 +880,6 @@ class AwsSecurityGroupCreator(CreateOrEnsureExistsAws):
         sgs = self.aws_client.get_all_security_groups(groupnames=None,
                                                       group_ids=None,
                                                       filters=None)
-        #lgr.debug(sgs)
         return [{'id': sg.id} for sg in sgs if sg.name == name]
 
     def create(self, name, description, rules):
@@ -1096,7 +1102,6 @@ class AwsSgKiller(CreateOrEnsureExistsAws):
         sgs = self.aws_client.get_all_security_groups(groupnames=None,
                                                       group_ids=None,
                                                       filters=None)
-        #lgr.debug(sgs)
         return [{'id': sg.id, "name": sg.name} for sg in sgs if sg.name == name]
 
     def kill(self, sgs):
