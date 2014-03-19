@@ -457,7 +457,7 @@ class CosmoOnAwsBootstrapper(object):
             except Exception:
                 lgr.debug("Failed to copy Amazon credentials files")
 
-            with settings(host_string=mgmt_ip), hide('running'):
+            with settings(host_string=mgmt_ip), hide('running', 'stderr', 'aborts','warnings'):
                 try:
                     lgr.info('downloading cloudify components package...')
                     self._download_package(
@@ -492,7 +492,7 @@ class CosmoOnAwsBootstrapper(object):
                               .format(CLOUDIFY_COMPONENTS_PACKAGE_PATH))
 
                     self._run('sudo %s/cloudify3-bootstrap.sh' %
-                              CLOUDIFY_PACKAGES_PATH)
+                              CLOUDIFY_PACKAGE_PATH)
                 except:
                     lgr.error('failed to install manager')
                     return False
