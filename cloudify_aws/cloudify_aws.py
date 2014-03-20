@@ -677,7 +677,8 @@ class CosmoOnAwsBootstrapper(object):
             shutil.rmtree(tempdir)
 
     def _make_auth_file(self, tempdir, aws_auth_config):
-        aws_auth_file_path = os.path.join(tempdir, 'aws_auth_config.json')
+        aws_auth_file_path = os.path.join(tempdir, 'ec2_config.json')
+        aws_auth_config = {"Amazon Credentials": aws_auth_config}
         with open(aws_auth_file_path, 'w') as f:
             json.dump(aws_auth_config, f)
         return aws_auth_file_path
